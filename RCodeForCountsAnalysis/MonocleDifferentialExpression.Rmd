@@ -1,0 +1,262 @@
+---
+title: "P440 analysis with monocle"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    number_sections: true
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, echo=FALSE, message=FALSE, warning=FALSE}
+library(knitr)
+library(dplyr)
+library(ggplot2); theme_set(
+  theme_bw(20) +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.border = element_rect(colour="black", fill=NA, size=1),
+          axis.text=element_text(colour="black"),
+          axis.ticks=element_line(colour="black"),
+          legend.key = element_blank(),
+          text = element_text(size=20),
+          strip.text.x = element_text(size = 14,margin = margin( b = 2, t = 2) ),
+            strip.background = element_rect(fill="white", colour="black")))
+
+library(ggthemes)
+library(ggbeeswarm)
+library(viridis)
+library(stringr)
+library(readxl)
+library(kableExtra)
+library(RColorBrewer)
+library(plotly)
+library(tidyr)
+library(gtools)
+#library(apird) #API for the research database
+#library(devtools)  #if needed to obtain github packages
+# install_github('mjdufort/TCRtools') #if needed to get Matt Dufort's package
+#library(TCRtools) 
+#library(annotables)
+#devtools::install_github("stephenturner/annotables")
+#library(RNAseQC) #install_github('benaroyaresearch/RNAseQC')
+#library(data.table)
+library(edgeR)
+library(ggrepel)
+library(ComplexHeatmap)
+#library(geneSetTools) # For barcode plots
+library(egg) #For ggarrange
+library(ggpubr) #Also for ggarrange
+#library(DGETools) #install_github('benaroyaresearch/DGETools')
+library(inlmisc) #For colors
+library(umap)
+#library(tcrGraph)
+#library(igraph)
+library(forcats)
+#library(ggalluvial)
+library(monocle3)
+library(Seurat)
+
+
+opts_chunk$set(fig.width=6, fig.height=4.0, cache = TRUE, echo=FALSE, warning=FALSE, message=FALSE, cache.lazy = FALSE, results='hide')
+opts_knit$set(root.dir = "/Users/hdeberg/Box/P440_Bach2_Ray")
+
+options(stringsAsFactors = FALSE)
+
+```
+
+```{r set_up_directories}
+
+baseDir <- "/Users/hdeberg/Box/P440_Bach2_Ray"
+annoDir <- file.path(baseDir, "anno")
+dataDir <- file.path(baseDir, "data")
+plotDir <- file.path(baseDir, "plotsAllFlowcells")
+tableDir <- file.path(baseDir, "tablesAllFlowcells")
+
+```
+
+```{r colors}
+
+sunsetColors <- GetColors(20, "sunset")  %>% as.vector()
+
+clusterColors <- GetColors(9, "muted") %>% as.vector()
+
+poolColors <- c("pool1" = "red",
+                "pool2" = "dodgerblue")
+
+mouseColors <- GetColors(5, "muted") %>% as.vector()
+names(mouseColors) <- c("HTO-M1",
+                        "HTO-M2",
+                        "HTO-M3",
+                        "HTO-M4",
+                        "HTO-M5")
+#add colors for negative, doublets
+mouseColors <- c(mouseColors, 
+                 "Negative" = "#000000",
+                 "Doublet" = "#FF0000")
+
+genotypeColors <- c("WT" = "darkcyan",
+                    "Bach2del" = "red",
+                    "Negative" = "black",
+                    "Doublet" = "gray")
+
+```
+
+```{r read_seurat_data}
+
+load(file.path(dataDir, "SeuratMerged.RData"))
+
+
+```
+
+```{r make_cds_objects}
+
+make_cds_from_seurat <- function(seurat_in){
+  
+  gene_matrix <- GetAssayData(seurat_in,
+                         assay="RNA",
+                         slot="counts")
+  
+  #Having only one column creates problems for combine_cds, so add a second dummy gene metadata column
+  #https://github.com/cole-trapnell-lab/monocle3/issues/323
+  gene_names = data.frame(gene_short_name = rownames(gene_matrix),
+                          extra_column = rownames(gene_matrix))
+  rownames(gene_names) <- rownames(gene_matrix)
+  meta_data = seurat_in@meta.data
+  
+  cds <- new_cell_data_set(gene_matrix, 
+                         cell_metadata = meta_data,
+                         gene_metadata = gene_names)
+  
+  return(cds)
+}
+
+## Combine into cell data set object
+##Split so that each CDS object can be normalized separately within monocle
+
+seuratSplit <- SplitObject(seuratMerged, split.by = "pool")
+
+pool1CDS <- make_cds_from_seurat(seuratSplit[[1]])
+pool2CDS <- make_cds_from_seurat(seuratSplit[[2]])
+
+```
+
+```{r normalize}
+
+#Normalize each expt separately
+pool1CDS <- preprocess_cds(pool1CDS)
+pool2CDS <- preprocess_cds(pool2CDS)
+
+
+#Combine normalized results
+CDS <- combine_cds(list(pool1CDS,
+                        pool2CDS),
+                   keep_all_genes = FALSE)
+
+CDS <- preprocess_cds(CDS,
+                      norm_method = "none")
+
+```
+
+```{r red_dim}
+
+plot_pc_variance_explained(CDS)
+
+CDS <- reduce_dimension(CDS)
+
+```
+
+```{r de}
+
+fitsAllCellsMutVsWT <- fit_models(CDS, model_formula_str = "~genotype+mouseID+pool")
+
+fitCoefs <- coefficient_table(fitsAllCellsMutVsWT)
+
+genotypeCoefs <- fitCoefs %>% 
+  dplyr::filter(term == "genotypeBach2del")  %>%
+  dplyr::select(-one_of(c("model", "model_summary"))) %>%
+  dplyr::arrange(p_value)
+
+write.csv(genotypeCoefs, 
+          file = file.path(tableDir, "DEMonocleAllCells_MutVsWT_PoolAndMouseCorrection.csv"),
+          row.names = F,
+          quote = F)
+
+#Write for use with pre-ranked GSEA.
+
+#arrange by normalized effect
+rankedList <- genotypeCoefs %>%
+  dplyr::arrange(desc(normalized_effect)) %>%
+  dplyr::select(gene_short_name, normalized_effect) %>%
+  dplyr::mutate(gene_short_name = str_to_upper(gene_short_name))
+
+#Subset to things that overlap with human genes for using C7
+humanGeneKey <-read.table("/Users/hdeberg/Box/P354_IMPACT_Justine_Wambre/data/EnsemblToHGNC_GRCh38.txt", 
+                            header = TRUE,
+                            sep = "\t", 
+                            na.strings = "")  
+
+rankedList <- rankedList %>%
+  dplyr::filter(gene_short_name %in% humanGeneKey$HGNC.symbol)
+
+  write.table(rankedList,
+              file = file.path(tableDir, "DEMonocleAllCellsRankedByEffect.rnk"),
+              sep = "\t",
+              col.names = F,
+              row.names = F,
+              quote = F)
+  
+#arrange by signed p-value
+rankedList <- genotypeCoefs %>%
+  dplyr::mutate(signed_q = -1*sign(normalized_effect)*log10(q_value)) %>%
+  dplyr::arrange(desc(signed_q)) %>%
+  dplyr::select(gene_short_name, signed_q) %>%
+  dplyr::mutate(gene_short_name = str_to_upper(gene_short_name))
+
+rankedList <- rankedList %>%
+  dplyr::filter(gene_short_name %in% humanGeneKey$HGNC.symbol)
+
+  write.table(rankedList,
+              file = file.path(tableDir, "DEMonocleAllCellsRankedBySignedLog10QValue.rnk"),
+              sep = "\t",
+              col.names = F,
+              row.names = F,
+              quote = F)
+  
+
+```
+
+
+
+```{r de_by_cluster}
+
+#use seurat clusters
+clusters <- sort(unique(colData(CDS)$seurat_clusters))
+
+for(clust in clusters){
+  #For testing, pick cluster 6 as it is small
+  #clust <- 6
+ subsetCDS <- CDS[,colData(CDS)$seurat_clusters == clust]
+
+ fitsWithinClustMutVsWT <- fit_models(subsetCDS, model_formula_str = "~genotype+mouseID+pool")
+
+  fitCoefsWithinClust <- coefficient_table(fitsWithinClustMutVsWT)
+
+  genotypeCoefsWithinClust <- fitCoefsWithinClust %>% 
+  dplyr::filter(term == "genotypeBach2del")  %>%
+  dplyr::select(-one_of(c("model", "model_summary"))) %>%
+  dplyr::arrange(p_value)
+
+write.csv(genotypeCoefsWithinClust,  
+          file = file.path(tableDir,
+                           paste0 ("DEMonocleWithinSeuratCluster_",clust ,"_MutVsWT_PoolAndMouseCorrection.csv")),
+          row.names = F,
+          quote = F) 
+
+}
+
+
+
+```

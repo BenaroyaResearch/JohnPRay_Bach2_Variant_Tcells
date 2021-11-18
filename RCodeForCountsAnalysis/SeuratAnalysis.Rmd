@@ -1,0 +1,1896 @@
+---
+title: "P440 Bach2 18del"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    number_sections: true
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, echo=FALSE, message=FALSE, warning=FALSE}
+library(knitr)
+library(dplyr)
+library(ggplot2); theme_set(
+  theme_bw(20) +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.border = element_rect(colour="black", fill=NA, size=1),
+          axis.text=element_text(colour="black"),
+          axis.ticks=element_line(colour="black"),
+          legend.key = element_blank(),
+          strip.text.x = element_text(size = 14,margin = margin( b = 2, t = 2) ),
+            strip.background = element_rect(fill="white", colour="black")))
+
+library(ggthemes)
+library(ggbeeswarm)
+library(viridis)
+library(stringr)
+library(readxl)
+library(kableExtra)
+library(RColorBrewer)
+library(plotly)
+library(tidyr)
+library(gtools)
+#library(devtools)  #if needed to obtain github packages
+# install_github('mjdufort/TCRtools') #if needed to get Matt Dufort's package
+#library(TCRtools) 
+#library(annotables)
+#devtools::install_github("stephenturner/annotables")
+#library(RNAseQC) #install_github('benaroyaresearch/RNAseQC')
+#library(data.table)
+#library(edgeR)
+#library(ggrepel)
+library(ComplexHeatmap)
+#library(geneSetTools) # For barcode plots
+library(egg) #For ggarrange
+library(ggpubr) #Also for ggarrange
+#library(DGETools) #install_github('benaroyaresearch/DGETools')
+library(inlmisc) #For colors
+library(umap)
+#library(tcrGraph)
+#library(igraph)
+library(forcats)
+#library(ggalluvial)
+library(Seurat)
+#library(scRepertoire)
+library(randomcoloR)
+library(apird)
+library(GGally)
+library(MASS)
+
+opts_chunk$set(fig.width=6, fig.height=4.0, cache = TRUE, echo=FALSE, warning=FALSE, message=FALSE, cache.lazy = FALSE, results='hide')
+opts_knit$set(root.dir = "/Users/hdeberg/Box/P440_Bach2_Ray")
+
+options(stringsAsFactors = FALSE)
+set.seed(42)
+
+```
+
+```{r set_up_directories, cache = TRUE}
+
+baseDir <- "/Users/hdeberg/Box/P440_Bach2_Ray"
+annoDir <- file.path(baseDir, "anno")
+dataDir <- file.path(baseDir, "data")
+plotDir <- file.path(baseDir, "plotsAllFlowcells")
+tableDir <- file.path(baseDir, "tablesAllFlowcells")
+
+```
+
+```{r get_anno}
+
+
+anno <- read_excel(file.path(annoDir, "P440-1_Final Annotation.xlsx"),
+                   sheet = "Sheet1")
+
+
+```
+
+```{r colors}
+
+sunsetColors <- GetColors(20, "sunset")  %>% as.vector()
+
+clusterColors <- GetColors(9, "muted") %>% as.vector()
+#clusterColors <- randomcoloR::distinctColorPalette(10)
+
+poolColors <- c("pool1" = "red",
+                "pool2" = "dodgerblue")
+
+mouseColors <- GetColors(5, "muted") %>% as.vector()
+names(mouseColors) <- c("M1",
+                        "M2",
+                        "M3",
+                        "M4",
+                        "M5")
+
+#add colors for negative, doublets
+mouseNegDoubletColors <- c(mouseColors,
+                           "Negative" = "#000000",
+                           "Doublet" = "#FF0000")
+
+genotypeColors <- c("WT" = "orange",
+                    "Bach2del" = "darkcyan")
+
+```
+
+```{r read_10x_gex_data_from_all_flowcells}
+
+#Read in samples individually 
+gexAbFiles <- list.files(file.path(dataDir, "gex_fb_per_sample_allFC"),
+                        full.names = T,
+                        pattern = "filtered_feature_bc_matrix.h5")
+
+gexAbObjects <- lapply(gexAbFiles, Read10X_h5)
+
+gexObjects <- list(gexAbObjects[[1]]$`Gene Expression`,
+                    gexAbObjects[[2]]$`Gene Expression`)
+
+abObjects <- list(gexAbObjects[[1]]$`Antibody Capture`,
+                    gexAbObjects[[2]]$`Antibody Capture`)
+
+#Make a list of Seurat gene expression count objects
+#Set parameters to define cells 
+seuratObjects <- lapply(gexObjects,
+                         function(x) CreateSeuratObject(counts = x,
+                                                        min.features = 100,
+                                                        min.cells = 3))
+
+
+```
+
+#Add feature barcode data
+
+```{r add_fb_data}
+
+#Create a separate "FB" assay slot within the Seurat object
+#This is preferable over adding the ab data as metadata because
+#it allows for seurat's normalization routine to be run on it. 
+
+
+#Separate hastags into a HT object assay, separate surface antibody tags into an FB (feature barcode) object assay  
+
+for(i in 1:length(seuratObjects)){
+  seurat <- seuratObjects[[i]]
+
+  ht <- abObjects[[i]]
+  ht <- ht[c("HTO_M1", 
+             "HTO_M2", 
+             "HTO_M3", 
+             "HTO_M4", 
+             "HTO_M5"),]
+  
+  fb <- abObjects[[i]]
+  fb <- fb[c("CD62L", 
+             "KLRG1",
+             "CD127"),]
+  
+  keepCells <- colnames(seurat)
+  
+  ht <- ht[,keepCells]
+  seurat[["HT"]] <- CreateAssayObject(ht)
+
+  fb <- fb[,keepCells]
+  seurat[["FB"]] <- CreateAssayObject(fb)
+  
+  seuratObjects[[i]] <- seurat
+
+}
+
+for(i in 1:length(seuratObjectsRun1)){
+  seurat <- seuratObjectsRun1[[i]]
+
+  ht <- abObjectsRun1[[i]]
+  ht <- ht[c("HTO_M1", 
+             "HTO_M2", 
+             "HTO_M3", 
+             "HTO_M4", 
+             "HTO_M5"),]
+  
+  fb <- abObjectsRun1[[i]]
+  fb <- fb[c("CD62L", 
+             "KLRG1",
+             "CD127"),]
+  
+  keepCells <- colnames(seurat)
+  
+  ht <- ht[,keepCells]
+  seurat[["HT"]] <- CreateAssayObject(ht)
+
+  fb <- fb[,keepCells]
+  seurat[["FB"]] <- CreateAssayObject(fb)
+  
+  seuratObjectsRun1[[i]] <- seurat
+
+}
+
+
+```
+
+```{r add_qc_metrics_anno}
+##Add % mito information, library name info
+poolOrder <- str_extract(gexAbFiles, "pool[1,2]")
+
+for(i in 1:length(seuratObjects)){
+  seurat <- seuratObjects[[i]]
+  seurat[["percent_mt"]] <- PercentageFeatureSet(seurat, pattern = "^mt-")
+  seurat[["pool"]] <- poolOrder[i]
+  seuratObjects[[i]] <- seurat
+}
+
+poolOrderRun1 <- str_extract(gexAbFilesRun1, "pool[1,2]")
+
+for(i in 1:length(seuratObjectsRun1)){
+  seurat <- seuratObjectsRun1[[i]]
+  seurat[["percent_mt"]] <- PercentageFeatureSet(seurat, pattern = "^mt-")
+  seurat[["pool"]] <- poolOrderRun1[i]
+  seuratObjectsRun1[[i]] <- seurat
+}
+
+```
+
+#Gene expression quality control
+
+##Plots of the number of features detected per library
+
+The following plots show the distribution of features (genes) detected for cells within a sample. High features may indicate a multi-plet rather than a single cell; low feature counts may indicate a low quality cell. 
+
+```{r plot_n_features, fig.height = 3, fig.width=3}
+
+#Select QC cutoffs
+
+nFeatureLow <-1000 
+nFeatureHigh <- 4500
+pctMt <- 4
+
+
+#Look at distributions of quality features
+nFeatureHistograms <- lapply(seuratObjects, function(x) hist(x$nFeature_RNA, 200, xlim= c(0,5000), main = unique(x$pool), xlab = "nFeature RNA"))
+
+pdf(file.path(plotDir,
+              "NFeatureHistograms.pdf"),
+    height = 4,
+    width = 10)
+
+par(mfrow=c(1,2))
+lapply(seuratObjects, function(x) {hist(x$nFeature_RNA, 50, xlim= c(0,6000), main = unique(x$pool) , xlab = "nFeature RNA")
+  abline(v = nFeatureHigh)
+  abline(v = nFeatureLow)})
+
+invisible(dev.off())
+```
+
+##Plots of the percent mitochondrial reads per library
+
+The following plots show the percent of features that mapped to mitochondrial genes. High percentages can indicate a poor quality or dying cell. 
+
+```{r plot_pct_mito, fig.height = 3, fig.width=3}
+
+pctMitoHistograms <- lapply(seuratObjects, function(x) hist(x$percent_mt, 50, xlim= c(0,20), main = unique(x$pool), xlab = "% mitochondrial reads"))
+
+pdf(file.path(plotDir,
+              "PctMitoHistograms.pdf"),
+    height = 4,
+    width = 10)
+
+par(mfrow=c(1,2))
+lapply(seuratObjects, function(x) {hist(x$percent_mt, 100, xlim= c(0,25),main = unique(x$pool), xlab = "% mitochondrial reads")
+  abline(v = pctMt)})
+
+invisible(dev.off())
+```
+
+## Quality metric scatterplots with cutoffs
+
+The plots below explore the relationship between percent mitochonridal reads and the number of features detected. Each point represents a cell. Lines on the plots indicate quality cutoffs for features (both a lower and an upper bound) and mitochrondial reads (an upper bound). 
+
+```{r inspect_qc_cutoffs, fig.width=8, fig.height=2}
+
+plotLayers <- list(geom_vline(xintercept = nFeatureLow),
+                    geom_vline(xintercept = nFeatureHigh),
+                    geom_hline(yintercept = pctMt),
+                    labs(x = "Number of genes",
+                         y = "% mito reads",
+                         title = ""),
+                    xlim(c(0, 7000)),
+                    ylim(c(0, 50)),
+                    theme(legend.position = 'none'))
+
+featureScatterPlots <- lapply(seuratObjects, function(x) FeatureScatter(x, 
+                          feature1 = "nFeature_RNA", 
+                          feature2 = "percent_mt") +
+  plotLayers +
+  ggtitle(unique(x$pool)))
+
+
+ggpubr::ggarrange(plotlist = featureScatterPlots,
+                  ncol = 1,
+                  nrow = 2)
+
+pdf(file.path(plotDir,
+              "QCscatterplots.pdf"),
+    height = 8,
+    width = 6)
+
+ggpubr::ggarrange(plotlist = featureScatterPlots,
+                  ncol = 1,
+                  nrow = 2)
+
+invisible(dev.off())
+
+```
+
+##Table of quality cutoff results
+
+The table below summarizes the number of cells per sample before and after quality control cutoffs. 
+
+```{r make_qc_cuts, results = "show"}
+
+seuratQC <- NULL
+
+for(i in 1:length(seuratObjects)){
+  seurat <- seuratObjects[[i]]
+    
+  seuratQC[[i]] <- subset(seurat, 
+                      subset = nFeature_RNA > nFeatureLow & nFeature_RNA < nFeatureHigh & percent_mt < pctMt)
+
+}
+
+#Tally how many cells pass QC
+poolAnno <- data.frame("pool" = c("pool1",
+                                  "pool2"))
+
+poolAnno$nCells <- NA
+poolAnno$nCellsQC <- NA
+
+for(i in 1:length(seuratObjects)){
+  
+  selectedPool <- unique(seuratObjects[[i]]$pool) %>%
+    as.character()
+    
+  poolAnno$nCells[poolAnno$pool == selectedPool] <- dim(seuratObjects[[i]])[2]
+  
+  poolAnno$nCellsQC[poolAnno$pool == selectedPool] <- dim(seuratQC[[i]])[2]
+
+}
+
+poolAnno$pctPass <- round(poolAnno$nCellsQC/poolAnno$nCells*100,2)
+
+poolAnno %>%
+  dplyr::select(pool, nCells, nCellsQC, pctPass) %>%
+  dplyr::rename(Pool = pool,
+                `Number of cells` = nCells,
+                `Number of high quality cells` = nCellsQC,
+                `Percent of cells that pass QC` = pctPass) %>%
+  kable(row.names = F,
+        caption = "Quality analysis summary") %>%
+  kable_styling(full_width = F, 
+                position = "left")
+
+```
+
+#Merge and visualize data without integration 
+
+```{r merge_no_integration}
+
+seuratMerged <- merge(seuratQC[[1]], 
+                       y = c(seuratQC[2]),
+                       add.cell.ids = poolOrder,
+                       merge.data = TRUE)
+
+seuratMerged <- NormalizeData(object = seuratMerged, 
+                                    verbose = FALSE,
+                                    normalization.method = "CLR", 
+                                    margin = 2, 
+                                    assay = "FB")
+
+seuratMerged <- NormalizeData(object = seuratMerged, 
+                                    verbose = FALSE,
+                                    normalization.method = "CLR", 
+                                    margin = 2, 
+                                    assay = "HT")
+
+seuratMerged <- NormalizeData(object = seuratMerged, verbose = FALSE)
+seuratMerged <- FindVariableFeatures(object = seuratMerged, 
+        selection.method = "vst", nfeatures = 2000, verbose = FALSE)
+
+seuratMerged <- ScaleData(object = seuratMerged, verbose = FALSE)
+seuratMerged <- RunPCA(object = seuratMerged, npcs = 30, verbose = FALSE)
+#ElbowPlot(seuratMerged)
+
+# seuratMerged <- FindNeighbors(seuratMerged, dims = 1:30)
+# seuratMerged <- FindClusters(seuratMerged, resolution = 0.5)
+# 
+# seuratMerged <- RunUMAP(object = seuratMerged, reduction = "pca", 
+#     dims = 1:30)
+
+```
+
+#Hashtag analysis
+
+```{r hashtag_demultiplexing_with_HTODemux}
+
+seuratMerged <- HTODemux(seuratMerged, 
+                         assay = "HT", 
+                         positive.quantile = 0.9)
+
+table(seuratMerged$HT_classification.global)
+
+#Make a variable that tallies HT assignment, negative or multiplet
+
+seuratMerged$mouseID <- case_when(seuratMerged$HT_classification.global == "Negative" ~ "Negative",
+                                seuratMerged$HT_classification.global == "Doublet" ~ "Doublet",
+                                seuratMerged$HT_classification.global == "Singlet" ~ seuratMerged$HT_maxID)
+
+seuratMerged$mouseID <- str_remove_all(seuratMerged$mouseID, "HTO-")
+
+#Make a variable that combines mouse ID and WT/Mut status
+
+seuratMerged$mouseGenotype <- case_when(seuratMerged$mouseID == "M1"&
+                                       seuratMerged$pool == "pool1"
+                                     ~ "Mouse1_WT",
+                                     seuratMerged$mouseID == "M1"&
+                                       seuratMerged$pool == "pool2"
+                                     ~ "Mouse1_Mut",
+                                     seuratMerged$mouseID == "M2"&
+                                       seuratMerged$pool == "pool1"
+                                     ~ "Mouse2_WT",
+                                     seuratMerged$mouseID == "M2"&
+                                       seuratMerged$pool == "pool2"
+                                     ~ "Mouse2_Mut",
+                                     seuratMerged$mouseID == "M3"&
+                                       seuratMerged$pool == "pool1"
+                                     ~ "Mouse3_WT",
+                                     seuratMerged$mouseID == "M3"&
+                                       seuratMerged$pool == "pool2"
+                                     ~ "Mouse3_Mut",
+                                     seuratMerged$mouseID == "M4"&
+                                       seuratMerged$pool == "pool1"
+                                     ~ "Mouse4_Mut",
+                                     seuratMerged$mouseID == "M4"&
+                                       seuratMerged$pool == "pool2"
+                                     ~ "Mouse4_WT",
+                                     seuratMerged$mouseID == "M5"&
+                                       seuratMerged$pool == "pool1"
+                                     ~ "Mouse5_Mut",
+                                     seuratMerged$mouseID == "M5"&
+                                       seuratMerged$pool == "pool2"
+                                     ~ "Mouse5_WT",
+                                seuratMerged$mouseID == "Doublet" ~ "Doublet",
+                                seuratMerged$mouseID == "Negative" ~ "Negative")
+
+seuratMerged$genotype <- case_when(seuratMerged$mouseID == "M1"&
+                                       seuratMerged$pool == "pool1"
+                                     ~ "WT",
+                                     seuratMerged$mouseID == "M1"&
+                                       seuratMerged$pool == "pool2"
+                                     ~ "Bach2del",
+                                     seuratMerged$mouseID == "M2"&
+                                       seuratMerged$pool == "pool1"
+                                     ~ "WT",
+                                     seuratMerged$mouseID == "M2"&
+                                       seuratMerged$pool == "pool2"
+                                     ~ "Bach2del",
+                                     seuratMerged$mouseID == "M3"&
+                                       seuratMerged$pool == "pool1"
+                                     ~ "WT",
+                                     seuratMerged$mouseID == "M3"&
+                                       seuratMerged$pool == "pool2"
+                                     ~ "Bach2del",
+                                     seuratMerged$mouseID == "M4"&
+                                       seuratMerged$pool == "pool1"
+                                     ~ "Bach2del",
+                                     seuratMerged$mouseID == "M4"&
+                                       seuratMerged$pool == "pool2"
+                                     ~ "WT",
+                                     seuratMerged$mouseID == "M5"&
+                                       seuratMerged$pool == "pool1"
+                                     ~ "Bach2del",
+                                     seuratMerged$mouseID == "M5"&
+                                       seuratMerged$pool == "pool2"
+                                     ~ "WT",
+                                seuratMerged$mouseID == "Doublet" ~ "Doublet",
+                                seuratMerged$mouseID == "Negative" ~ "Negative")
+
+seuratMerged$genotype <- factor(seuratMerged$genotype,
+                                levels = c("WT",
+                                           "Bach2del",
+                                           "Negative",
+                                           "Doublet"))
+```
+
+```{r count_cells_by_assignedID}
+
+htCounts <- seuratMerged@meta.data %>%
+  dplyr::group_by(pool, mouseID) %>%
+  dplyr::summarise(nCells = n()) %>%
+  pivot_wider(names_from = "pool",
+              values_from = "nCells")
+
+htCounts %>%
+  kable(row.names = F,
+        caption = "Hashtag demultiplexing results") %>%
+  kable_styling(full_width = F, 
+                position = "left")
+
+```
+
+```{r biaxial_and_ridge_HT_plots}
+htVars <- c("HTO-M1", 
+             "HTO-M2", 
+             "HTO-M3", 
+             "HTO-M4", 
+             "HTO-M5")
+
+DefaultAssay(seuratMerged) <- "HT"
+htDF <- FetchData(seuratMerged,
+                  vars = htVars)
+htDF$mouseID <- seuratMerged$mouseID
+
+
+png(file.path(plotDir, 
+              "Scatterplots_HTExpression.png"),
+    height = 1000,
+    width = 1200)
+
+ggpairs(htDF,
+        columns = 1:5,
+        aes(color = mouseID,
+            alpha = 0.4)) +
+        scale_color_manual(values = mouseNegDoubletColors) +
+        scale_fill_manual(values = mouseNegDoubletColors)
+
+invisible(dev.off())
+
+png(file.path(plotDir, 
+              "RidgePlots_HTExpression.png"),
+    height = 1000,
+    width = 1200)
+
+RidgePlot(seuratMerged, 
+          assay = "HT", 
+          features = htVars, 
+          group.by = "mouseID",
+          same.y.lims = TRUE,
+          ncol = 2) &
+  scale_fill_manual(values = mouseNegDoubletColors)
+
+invisible(dev.off())
+
+
+
+```
+
+
+```{r remove_negative_or_doublet_cells}
+
+seuratMerged <- subset(seuratMerged, 
+                         subset = (mouseID %in% c("M1",
+                                                  "M2",
+                                                  "M3",
+                                                  "M4",
+                                                  "M5")))
+
+#Re-run normalization, clustering, UMAP, etc on this subset
+
+DefaultAssay(seuratMerged) <- "RNA"
+seuratMerged <- NormalizeData(object = seuratMerged, 
+                                    verbose = FALSE,
+                                    normalization.method = "CLR", 
+                                    margin = 2, 
+                                    assay = "FB")
+
+seuratMerged <- NormalizeData(object = seuratMerged, 
+                                    verbose = FALSE,
+                                    normalization.method = "CLR", 
+                                    margin = 2, 
+                                    assay = "HT")
+
+seuratMerged <- NormalizeData(object = seuratMerged, verbose = FALSE)
+seuratMerged <- FindVariableFeatures(object = seuratMerged, 
+        selection.method = "vst", nfeatures = 2000, verbose = FALSE)
+
+seuratMerged <- ScaleData(object = seuratMerged, verbose = FALSE)
+seuratMerged <- RunPCA(object = seuratMerged, npcs = 30, verbose = FALSE)
+#ElbowPlot(seuratMerged)
+
+seuratMerged <- FindNeighbors(seuratMerged, dims = 1:30)
+seuratMerged <- FindClusters(seuratMerged, resolution = 0.5)
+
+seuratMerged <- RunUMAP(object = seuratMerged, reduction = "pca", 
+    dims = 1:30)
+
+```
+
+```{r check_clusters}
+
+DimPlot(object = seuratMerged, 
+                          reduction = "umap", 
+                          group = "seurat_clusters")+
+  #scale_color_manual(values = clusterColors) +
+  labs(x = "UMAP 1", y ="UMAP 2", color = "Cluster", title = "") +
+  theme(aspect.ratio=1) +
+  facet_wrap(~seurat_clusters)
+
+clusterTree <- BuildClusterTree(object = seuratMerged, slot = "data")
+PlotClusterTree(clusterTree)
+
+#Clusters 8,9 are very small consists of cells with higher % mito reads than other clusters and doesn't closely resemble any other clusters according to the dendrogram. For these reasons, it makes sense to remove this cluster. 
+
+table(seuratMerged$seurat_clusters)
+
+seuratMerged <- subset(seuratMerged,
+                       subset = (seurat_clusters %in% c("0",
+                                                        "1",
+                                                        "2",
+                                                        "3",
+                                                        "4",
+                                                        "5",
+                                                        "6",
+                                                        "7")))
+
+seuratMerged$seurat_clusters <- droplevels(seuratMerged$seurat_clusters)
+
+clusterTree <- BuildClusterTree(object = seuratMerged, slot = "data")
+PlotClusterTree(clusterTree)
+
+DimPlot(object = seuratMerged, 
+                          reduction = "umap", 
+                          group = "seurat_clusters")+
+  scale_color_manual(values = clusterColors) +
+  labs(x = "UMAP 1", y ="UMAP 2", color = "Cluster", title = "") +
+  theme(aspect.ratio=1) 
+
+#Re-run normalization, clustering, UMAP, etc on this subset
+
+DefaultAssay(seuratMerged) <- "RNA"
+seuratMerged <- NormalizeData(object = seuratMerged, 
+                                    verbose = FALSE,
+                                    normalization.method = "CLR", 
+                                    margin = 2, 
+                                    assay = "FB")
+
+seuratMerged <- NormalizeData(object = seuratMerged, 
+                                    verbose = FALSE,
+                                    normalization.method = "CLR", 
+                                    margin = 2, 
+                                    assay = "HT")
+
+seuratMerged <- NormalizeData(object = seuratMerged, verbose = FALSE)
+seuratMerged <- FindVariableFeatures(object = seuratMerged, 
+        selection.method = "vst", nfeatures = 2000, verbose = FALSE)
+
+seuratMerged <- ScaleData(object = seuratMerged, verbose = FALSE)
+seuratMerged <- RunPCA(object = seuratMerged, npcs = 30, verbose = FALSE)
+#ElbowPlot(seuratMerged)
+
+seuratMerged <- FindNeighbors(seuratMerged, dims = 1:30)
+seuratMerged <- FindClusters(seuratMerged, resolution = 0.5)
+
+seuratMerged <- RunUMAP(object = seuratMerged, reduction = "pca", 
+    dims = 1:30)
+```
+
+
+```{r examine_reclustered_data}
+
+clusterTree <- BuildClusterTree(object = seuratMerged, slot = "data")
+PlotClusterTree(clusterTree)
+
+DimPlot(object = seuratMerged, 
+                          reduction = "umap", 
+                          group = "seurat_clusters")+
+  scale_color_manual(values = clusterColors) +
+  labs(x = "UMAP 1", y ="UMAP 2", color = "Cluster", title = "") +
+  theme(aspect.ratio=1) 
+
+#Clusters 6 and 1 are very similar.Merge these. 
+
+seuratMerged$originalClusterID <- seuratMerged$seurat_clusters
+seuratMerged$seurat_clusters[seuratMerged$originalClusterID == "6"] <- "1"
+#Renumber 7 to 6 to eliminate a gap 
+seuratMerged$seurat_clusters[seuratMerged$originalClusterID == "7"] <- "6"
+seuratMerged$seurat_clusters <- droplevels(seuratMerged$seurat_clusters)
+clusterColors <- clusterColors[c(1,3,4,5,7,8,9)]
+
+```
+
+```{r merged_color_by_mouse, fig.height=12, fig.width=5}
+
+gMergedMouse <- DimPlot(object = seuratMerged, 
+                           reduction = "umap", 
+                           group.by = "mouseID",
+                           shuffle = TRUE)+
+  scale_color_manual(values = mouseColors)+
+  labs(x = "UMAP 1", y ="UMAP 2", title = "Mouse") +
+  theme(aspect.ratio=1)
+
+print(gMergedMouse)
+
+pdf(file.path(plotDir, "UMAP_Merged_Mouse.pdf"),
+    height = 4, 
+    width = 6,
+    onefile = F)
+
+print(gMergedMouse)
+
+invisible(dev.off())
+
+png(file.path(plotDir, "UMAP_Merged_Mouse.png"),
+    height = 400, 
+    width = 550)
+
+print(gMergedMouse)
+
+invisible(dev.off())
+
+gMergedMouseFacet <- DimPlot(object = seuratMerged, 
+                           reduction = "umap", 
+                           group.by = "mouseID",
+                           split.by = "mouseID",
+                           ncol = 3)+
+  scale_color_manual(values = mouseColors)+
+  labs(x = "UMAP 1", y ="UMAP 2") +
+  theme(aspect.ratio=1)
+
+print(gMergedMouseFacet)
+
+
+png(file.path(plotDir, "UMAP_Merged_Mouse_Faceted.png"),
+    height = 800, 
+    width = 1000)
+
+print(gMergedMouseFacet)
+
+invisible(dev.off())
+
+```
+
+```{r plot_dim_red_merged, fig.height=12, fig.width=5}
+
+gMergedPool <- DimPlot(object = seuratMerged, 
+                           reduction = "umap", 
+                           group.by = "pool",
+                           shuffle = TRUE)+
+  scale_color_manual(values = poolColors)+
+  labs(x = "UMAP 1", y ="UMAP 2", title = "Pool") +
+  theme(aspect.ratio=1)
+
+print(gMergedPool)
+
+pdf(file.path(plotDir, "UMAP_Merged_Pool.pdf"),
+    height = 4, 
+    width = 10,
+    onefile = F)
+
+print(gMergedPool)
+
+
+invisible(dev.off())
+
+png(file.path(plotDir, "UMAP_Merged_Pool.png"),
+    height = 400, 
+    width = 550)
+
+print(gMergedPool)
+
+invisible(dev.off())
+
+
+
+```
+
+#Feature investigations
+
+##Surface protein expression
+
+```{r merged_color_by_surface_ab}
+
+DefaultAssay(seuratMerged) <- "FB"
+
+gAbs <- FeaturePlot(object = seuratMerged,
+            features = c("CD62L",
+                         "KLRG1",
+                         "CD127"),
+                           reduction = "umap",
+            ncol = 3) &
+  theme(aspect.ratio=1)
+
+png(file.path(plotDir, "UMAP_Merged_Abs.png"),
+    height = 500, 
+    width = 1200)
+
+print(gAbs)
+
+invisible(dev.off())
+
+```
+
+##Quality metrics
+
+```{r merged_color_by_qc}
+
+gPctMito <- FeaturePlot(object = seuratMerged, 
+                                   reduction = "umap", 
+                                   features = "percent_mt") +
+  labs(x = "UMAP 1", y ="UMAP 2", title = "% mito reads") 
+
+gNFeat <- FeaturePlot(object = seuratMerged, 
+                                   reduction = "umap", 
+                                   features = "nFeature_RNA") +
+  labs(x = "UMAP 1", y ="UMAP 2", title = "Number of features") 
+
+pdf(file.path(plotDir, "UMAP_Merged_QC.pdf"),
+    height = 3, 
+    width = 8,
+    onefile = F)
+
+egg::ggarrange(gPctMito,
+               gNFeat,
+               ncol = 2)
+
+invisible(dev.off())
+
+png(file.path(plotDir, "UMAP_Merged_QC.png"),
+    height = 400, 
+    width = 900)
+
+egg::ggarrange(gPctMito,
+               gNFeat,
+               ncol = 2)
+
+invisible(dev.off())
+
+pctMitoClusterAverages <- seuratMerged@meta.data %>%
+  dplyr::group_by(seurat_clusters) %>%
+  dplyr::summarise(meanPctMito = mean(percent_mt))
+
+nFeatClusterAverages <- seuratMerged@meta.data %>%
+  dplyr::group_by(seurat_clusters) %>%
+  dplyr::summarise(meannFeature_RNA = mean(nFeature_RNA))
+
+
+```
+
+##Cell cycle prediction
+
+```{r cell_cycle_scoring}
+
+DefaultAssay(seuratMerged) <- "RNA"
+
+# A list of cell cycle markers, from Tirosh et al, 2015, is loaded with Seurat.  We can
+# segregate this list into markers of G2/M phase and markers of S phase
+sGenes <- cc.genes$s.genes %>% str_to_sentence()
+g2mGenes <- cc.genes$g2m.genes %>% str_to_sentence()
+
+seuratMerged <- CellCycleScoring(seuratMerged, s.features = sGenes, g2m.features = g2mGenes)
+
+# view cell cycle scores and phase assignments
+#head(seurat_integrated$Phase)
+
+gCycle <- DimPlot(object = seuratMerged, 
+                         reduction = "umap", 
+                         group.by = "Phase",
+                         shuffle = TRUE)+
+  labs(x = "UMAP 1", y ="UMAP 2", title = "Cell cycle phase") +
+  theme(aspect.ratio=1)
+
+png(file.path(plotDir, "UMAPMergedCellCycle.png"),
+    height = 400, 
+    width = 900)
+
+print(gCycle)
+
+invisible(dev.off())
+
+pdf(file.path(plotDir, "UMAPMergedCellCycle.pdf"),
+    height = 4, 
+    width = 9)
+
+print(gCycle)
+
+invisible(dev.off())
+
+```
+
+##Clusters
+
+```{r cluster_centroids}
+
+#Compute the mean position of each cluster in UMAP space to use for plotting cluster numbers over embeddings. 
+
+umapCoords <- Embeddings(object = seuratMerged[["umap"]]) 
+umapCoords <- as.data.frame(umapCoords)
+
+umapCoords <- cbind(umapCoords, seuratMerged@meta.data)
+
+clusterCenters <- umapCoords %>%
+  dplyr::group_by(seurat_clusters) %>%
+  dplyr::summarise(mean_x = mean(UMAP_1),
+                   mean_y = mean(UMAP_2))
+
+```
+
+```{r plot_clusters}
+
+DimPlot(object = seuratMerged, 
+                          reduction = "umap", 
+                          group = "seurat_clusters")+
+  scale_color_manual(values = clusterColors) +
+  labs(x = "UMAP 1", y ="UMAP 2", color = "Cluster", title = "") +
+  theme(aspect.ratio=1) +
+  facet_wrap(~seurat_clusters)
+
+
+```
+
+```{r plot_dim_red_clusters, fig.height=6, fig.width=5}
+
+gMergedCluster <- DimPlot(object = seuratMerged, 
+                          reduction = "umap", 
+                          group = "seurat_clusters",
+                          label = TRUE)+
+  scale_color_manual(values = clusterColors) +
+  labs(x = "UMAP 1", y ="UMAP 2", color = "Cluster", title = "") +
+  theme(aspect.ratio=1,
+        legend.position = "none")
+
+
+pdf(file.path(plotDir, "UMAP_Clusters.pdf"),
+    height = 4, 
+    width = 6,
+    onefile = F)
+
+print(gMergedCluster)
+
+invisible(dev.off())
+
+png(file.path(plotDir, "UMAP_Clusters.png"),
+    height = 400, 
+    width = 450)
+
+print(gMergedCluster)
+
+invisible(dev.off())
+
+png(file.path(plotDir, "UMAP_ClustersFaceted.png"),
+    height = 800, 
+    width = 1200)
+
+gMergedCluster <- gMergedCluster +
+  facet_wrap(~seurat_clusters)
+
+print(gMergedCluster)
+
+invisible(dev.off())
+
+```
+
+The composition of each cluster according to mouse and pool is shown below. 
+
+```{r cluster_composition, fig.width=8}
+
+clusterCounts <- seuratMerged@meta.data %>%
+  dplyr::group_by(mouseID,
+                  pool,
+                  seurat_clusters) %>%
+  dplyr::summarise(nCells = n()) %>%
+  dplyr::ungroup() %>%
+  dplyr::group_by(seurat_clusters) %>%
+  dplyr::mutate(totInClust = sum(nCells),
+                pctInGroup = nCells/totInClust*100)
+
+seuratMerged$mouseGenotype <- factor(seuratMerged$mouseGenotype,
+                                     levels = c())
+
+mouseGenotypeColors <- brewer.pal(10, "paired")
+names(mouseGenotypeColors) <- 
+
+gClusterCounts   <- clusterCounts %>% 
+  ggplot(aes(x=seurat_clusters, 
+             y=pctInGroup, 
+             fill=interaction(mouseID, pool))) + 
+  geom_col() + 
+  #scale_fill_manual(values = donorColors) +
+  labs(x = "Cluster",
+       y = "Fraction of cells in cluster",
+       fill = "")
+
+pdf(file.path(plotDir, "Barplot_ClusterComposition.pdf"),
+    height = 4, 
+    width = 10,
+    onefile = F)
+
+print(gClusterCounts)
+
+invisible(dev.off())
+```
+
+
+```{r cluster_freq_dist_by_mouse}
+
+#Look at cluster occupancy by mouse
+
+clusterCounts <- seuratMerged@meta.data %>%
+  dplyr::group_by(seurat_clusters, genotype, mouseID) %>%
+  dplyr::summarise(nCells = n()) %>%
+  dplyr::ungroup() %>%
+  dplyr::group_by(genotype, mouseID) %>%
+  dplyr::mutate(pctCells = nCells/sum(nCells)*100)
+
+gClusters <- clusterCounts %>%
+  ggplot(aes(x = genotype,
+             y = pctCells,
+             group = mouseID,
+             color = mouseID)) +
+  geom_line() +
+  geom_point() +
+  scale_color_manual(values = mouseColors) +
+  labs(x = "",
+       y = "% cells from mouse/genotype in cluster") +
+  facet_wrap(~seurat_clusters,
+             scales = "free_y") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+pdf(file.path(plotDir, "LinePlot_PctCellsFromMouseGenotypeInCluster.pdf"),
+    height = 8, 
+    width = 10)
+
+print(gClusters)
+
+invisible(dev.off())
+
+write.csv(clusterCounts,
+          file.path(tableDir, "PctCellsFromMouseGenotypeInCluster.csv"),
+          row.names = F,
+          quote = F)
+
+#Compute p-values 
+
+clusterStats <- clusterCounts %>%
+  dplyr::group_by(seurat_clusters) %>%
+  dplyr::arrange(mouseID) %>% #crucial for pairing to work
+  dplyr::summarise(p_t_paired = t.test(pctCells[genotype == "WT"],
+                                          pctCells[genotype == "Bach2del"],
+                                          paired = T)$p.value) 
+
+clusterStats$FDR <- p.adjust(clusterStats$p_t_paired, method = "fdr")
+
+write.csv(clusterStats,
+          file.path(tableDir, "PValues_Bach218DelVsWTPctCellsInCluster.csv"),
+          row.names = F,
+          quote = F)
+
+```
+
+##Cluster markers
+
+```{r cluster_top_markers}
+
+DefaultAssay(seuratMerged) <- "RNA"
+Idents(seuratMerged) <- "seurat_clusters"
+
+clusterMarkers <- FindAllMarkers(seuratMerged)
+
+topMarkersLong <- clusterMarkers %>%
+  dplyr::group_by(cluster) %>%
+  dplyr::filter(avg_log2FC > 0) %>%
+  dplyr::slice_min(p_val_adj, n=10) %>%
+  dplyr::slice_max(avg_log2FC, n = 10) %>%
+  dplyr::mutate(fc_order = order(avg_log2FC)) 
+
+topMarkers <- topMarkersLong %>%
+  pivot_wider(id_cols = "fc_order",
+              names_from = "cluster",
+              values_from = "gene")
+
+write.csv(topMarkers,
+          file.path(tableDir, "TopMarkers.csv"),
+          row.names = F,
+          quote = F)
+
+#Get top all top markers in wide format
+
+topMarkersWide <- clusterMarkers %>%
+  #dplyr::filter(!str_detect(gene, "Trav|Trbv")) %>%
+  dplyr::mutate(cluster_id = paste0("Cluster ",cluster),
+                cluster_id = factor(cluster_id, levels = mixedsort(unique(cluster_id)))) %>%
+  dplyr::group_by(cluster_id) %>%
+  dplyr::mutate(row_order = order(p_val_adj)) %>%
+  pivot_wider(id_cols = row_order,
+              names_from = "cluster_id",
+              names_glue = "{cluster_id}_{.value}",
+              values_from = c( "cluster_id",
+                               "gene",
+                               "avg_log2FC",
+                               "p_val_adj"))
+  
+clusters <- unique(clusterMarkers$cluster) %>% mixedsort()
+clusterLabs <- paste0("Cluster ",rep(clusters, each = 4))
+
+columnLabs <- c("cluster_id",
+                 "gene",
+                 "avg_log2FC",
+                "p_val_adj")
+
+columnLabs <- rep(columnLabs, nClust)
+
+columnLabs <- paste0(clusterLabs, "_", columnLabs)
+
+topMarkersWide <- topMarkersWide %>%
+  dplyr::select(columnLabs)
+
+write.csv(topMarkersWide,
+          file.path(tableDir, "SeuratMerged_TopMarkersByCluster.csv"),
+          row.names = F,
+          quote = F)
+
+top30MarkersUp <- clusterMarkers %>%
+  dplyr::group_by(cluster) %>%
+  dplyr::filter(avg_log2FC > 0) %>%
+  dplyr::slice_min(p_val_adj, n=30) %>%
+  dplyr::slice_max(avg_log2FC, n = 30) %>%
+  dplyr::mutate(fc_order = order(avg_log2FC)) 
+
+top30Wide <- top30MarkersUp %>%
+  dplyr::mutate(cluster_id = paste0("Cluster ",cluster),
+                cluster_id = factor(cluster_id, levels = mixedsort(unique(cluster_id)))) %>%
+  dplyr::group_by(cluster_id) %>%
+  dplyr::mutate(row_order = order(p_val_adj)) %>%
+  pivot_wider(id_cols = row_order,
+              names_from = "cluster_id",
+              names_glue = "{cluster_id}_{.value}",
+              values_from = c( "cluster_id",
+                               "gene",
+                               "avg_log2FC",
+                               "p_val_adj"))
+
+clusters <- unique(clusterMarkers$cluster) %>% mixedsort()
+clusterLabs <- paste0("Cluster ",rep(clusters, each = 4))
+
+columnLabs <- c("cluster_id",
+                 "gene",
+                 "avg_log2FC",
+                "p_val_adj")
+
+columnLabs <- rep(columnLabs, nClust)
+
+columnLabs <- paste0(clusterLabs, "_", columnLabs)
+
+top30Wide <- top30Wide %>%
+  dplyr::select(columnLabs)
+
+write.csv(top30Wide,
+          file.path(tableDir, "SeuratMerged_Top30MarkersUpByCluster.csv"),
+          row.names = F,
+          quote = F)
+```
+
+##Plot heatmap of cluster-specific genes
+
+```{r cluster_markers_hmap}
+
+#Average top marker expr by cluster.
+
+topMarkersHmap <- clusterMarkers %>%
+  dplyr::group_by(cluster) %>%
+  dplyr::filter(avg_log2FC > 0) %>%
+  dplyr::slice_min(p_val_adj, n=20) %>%
+  dplyr::slice_max(avg_log2FC, n = 20) %>%
+  dplyr::mutate(fc_order = order(avg_log2FC)) 
+
+selectedFeatures <- topMarkersHmap$gene
+
+clusterAverages <- AverageExpression(seuratMerged, 
+                                    assays = "RNA",
+                                    features = selectedFeatures,
+                                    group.by = "seurat_clusters",
+                                    return.seurat = T) 
+
+avgExprMat <- clusterAverages[["RNA"]]@data %>% as.matrix()
+
+scaledExprMat <- t(scale(t(avgExprMat)))
+
+
+clusterAnno <- rownames(clusterAverages@meta.data)
+
+names(clusterColors) <- as.character(seq(0,length(clusterColors)-1))
+
+columnAnno <- HeatmapAnnotation(Cluster = clusterAnno,
+                              col = list(Cluster = clusterColors),
+                              simple_anno_size = unit(0.25, "cm"))
+
+selectedGenes <- c("Ccr7", #Cluster 0
+                   "Id3",
+                   "Il7r",
+                   "Tcf7",
+                   "Sell",
+                   "Eomes",#Cluster 1
+                   "Ccl5",
+                   "Gzmk",
+                   "Tigit", #Cluster 2
+                   "Cxcr6",
+                   "S100a4",
+                   "S100a6",
+                   "Itga1",
+                   "Cx3cr1", #Cluster 3
+                   "Gzma", 
+                   "Gzmb",
+                   "Zeb2",
+                   "Klrg1",
+                   "Ifitm1", #Cluster 4
+                   "Irf7",
+                   "Lgals3",
+                   "Isg15",
+                   "Ifit1",
+                   "Ifit3",
+                   "Stat1",
+                   "Mki67",
+                   "Cdkn3",
+                   "Cdk1")
+
+
+geneNameAnno <- rowAnnotation(link = anno_mark(at = match(selectedGenes, rownames(scaledExprMat)), 
+        labels = selectedGenes,
+        labels_gp = gpar(fontsize = 6),
+        padding = unit(1, "mm")))  
+
+pdf(file.path(plotDir, 
+              "HeatmapTopClusterMarkers.pdf"),
+    height = 4,
+    width = 4)
+
+Heatmap(scaledExprMat, 
+        name = "Row z-score",
+        clustering_distance_columns = "manhattan",
+        cluster_columns = TRUE,
+        show_column_dend = TRUE,
+        column_dend_height = unit(0.5, "cm"),
+        cluster_rows = TRUE,
+        show_row_dend = FALSE,
+        top_annotation = columnAnno,
+        right_annotation = geneNameAnno,
+        show_row_names = FALSE,
+        column_names_rot = 0,
+        column_names_gp = gpar(fontsize = 6))
+
+invisible(dev.off())
+
+```
+
+##Make UMAP plots colored by cluster-specific genes
+
+```{r selected_gene_plots}
+
+
+plotGene <- function(geneName){
+  
+  gGenePlot <- FeaturePlot(object = subset(seuratMerged),
+                           features = c(geneName),
+                           reduction = "umap",
+                           label = TRUE) +
+  labs(x = "UMAP 1", y ="UMAP 2") +
+    theme(aspect.ratio=1)
+  
+  print(gGenePlot)
+  
+  genePlotName <- paste0(geneName, "UMAP")
+  
+  pdf(file.path(plotDir, 
+                "IndGenePlots",
+                paste0(genePlotName, ".pdf")),
+      height = 4, 
+      width = 6,
+      onefile = F)
+  
+  print(gGenePlot)
+  
+  invisible(dev.off())
+  
+  png(file.path(plotDir, 
+                "IndGenePlots",
+                paste0(genePlotName, ".png")),
+      height = 400, 
+      width = 450)
+  
+  print(gGenePlot)
+  
+  invisible(dev.off())
+  
+  return()
+  
+}
+  
+
+for(i in 1:length(selectedGenes)){
+  plotGene(selectedGenes[i])
+}
+  
+
+
+
+```
+
+
+##Selected marker plots
+
+```{r klrg1_cd127}
+
+blendColors <- c("lightgrey", "darkblue", "darkred")
+
+DefaultAssay(seuratMerged) <- "FB"
+
+gFB_KLRG1_CD127 <- FeaturePlot(object = seuratMerged,
+            features = c("KLRG1",
+                         "CD127"),
+            reduction = "umap",
+            cols = blendColors,
+            blend = TRUE,
+            blend.threshold = 0.05,
+            label = TRUE) &
+  theme(aspect.ratio=1)
+
+DefaultAssay(seuratMerged) <- "RNA"
+
+gRNA_Klrg1_Il7r <- FeaturePlot(object = seuratMerged,
+            features = c("Klrg1", "Il7r"),
+            reduction = "umap",
+            cols = blendColors,
+            blend = TRUE,
+            blend.threshold = 0.05,
+            label = TRUE) &
+  theme(aspect.ratio=1)
+
+png(file.path(plotDir, "UMAP_Blended_KLRG1_CD127_CITEseq.png"),
+    height = 500, 
+    width = 1200)
+
+print(gFB_KLRG1_CD127)
+
+invisible(dev.off())
+
+pdf(file.path(plotDir, "UMAP_Blended_KLRG1_CD127_CITEseq.pdf"),
+    height = 5, 
+    width = 12,
+    onefile = F)
+
+print(gFB_KLRG1_CD127)
+
+invisible(dev.off())
+
+
+png(file.path(plotDir, "UMAP_Blended_KLRG1_CD127_GeneExpr.png"),
+    height = 500, 
+    width = 1200)
+
+print(gRNA_Klrg1_Il7r)
+
+invisible(dev.off())
+
+pdf(file.path(plotDir, "UMAP_Blended_KLRG1_CD127_GeneExpr.pdf"),
+    height = 5, 
+    width = 12,
+    onefile = F)
+
+print(gRNA_Klrg1_Il7r)
+
+invisible(dev.off())
+
+```
+
+```{r cluster_sel_gene_expr}
+
+DefaultAssay(seuratMerged) <- "RNA"
+
+#Average selected genes for clusters 0 and 3 for a blended color plot
+seuratMerged$Il7r_Ccr7_Sell_Tcf7 <- apply(FetchData(seuratMerged, vars = c("Il7r", "Ccr7", "Sell", "Tcf7")),1, mean)
+
+seuratMerged$Klrg1_Zeb2_Gzmb <- apply(FetchData(seuratMerged, vars = c("Klrg1", "Zeb2", "Gzmb")),1, mean)
+
+gClusters3And0Markers <- FeaturePlot(object = seuratMerged,
+            features = c("Klrg1_Zeb2_Gzmb", "Il7r_Ccr7_Sell_Tcf7"),
+            reduction = "umap",
+            cols = blendColors,
+            blend = TRUE,
+            blend.threshold = 0.05,
+            label = TRUE) &
+  theme(aspect.ratio=1)
+
+png(file.path(plotDir, "UMAP_Blended_Clusters0And3Markers.png"),
+    height = 500, 
+    width = 1200)
+
+print(gClusters3And0Markers)
+
+invisible(dev.off())
+
+pdf(file.path(plotDir, "UMAP_Blended_Clusters0And3Markers.pdf"),
+    height = 5, 
+    width = 12,
+    onefile = F)
+
+print(gClusters3And0Markers)
+
+invisible(dev.off())
+
+
+```
+
+##Genotype density plots
+
+```{r umap_genotype_density}
+
+gMergedGenotype <- DimPlot(object = seuratMerged, 
+                           reduction = "umap", 
+                           group.by = "genotype",
+                           shuffle = TRUE)+
+  scale_color_manual(values = genotypeColors)+
+  labs(x = "UMAP 1", y ="UMAP 2", title = "Genotype") +
+  theme(aspect.ratio=1)
+
+
+png(file.path(plotDir, "UMAP_Merged_Genotype.png"),
+    height = 400, 
+    width = 550)
+
+print(gMergedGenotype)
+
+invisible(dev.off())
+
+#Extract UMAP to make dim red plots
+
+umapCoords <- Embeddings(object = seuratMerged[["umap"]]) 
+umapCoords <- as.data.frame(umapCoords)
+
+umapCoords <- cbind(umapCoords, seuratMerged@meta.data)
+
+gDensityPlot <- ggplot(umapCoords)+
+  geom_point(aes(x=UMAP_1, 
+                 y=UMAP_2,
+                 color = genotype)) +
+  scale_color_manual(values = genotypeColors) +
+  geom_density2d(aes(x=UMAP_1, 
+                     y=UMAP_2),
+                 color = "black",
+                 bins = 10) +
+  facet_wrap(~genotype)
+
+#Calculate difference between 2D densities
+#Based on https://stackoverflow.com/questions/28521145/r-calculate-and-plot-difference-between-two-density-countours
+
+# Calculate the common x and y range
+umapWT <- umapCoords %>%
+  dplyr::filter(genotype == "WT")
+umapMUT <- umapCoords %>%
+  dplyr::filter(genotype == "Bach2del")
+
+xrng = range(c(umapWT$UMAP_1-0.2, umapMUT$UMAP_1+0.2))
+yrng = range(c(umapWT$UMAP_2-0.2, umapMUT$UMAP_2+0.2))
+
+# Calculate the 2d density estimate over the common range
+dWT = kde2d(umapWT$UMAP_1, umapWT$UMAP_2, lims=c(xrng, yrng), n=200)
+dMUT = kde2d(umapMUT$UMAP_1, umapMUT$UMAP_2, lims=c(xrng, yrng), n=200)
+
+# Confirm that the grid points for each density estimate are identical
+identical(dWT$x, dMUT$x) # TRUE
+identical(dWT$y, dMUT$y) # TRUE
+
+# Calculate the difference between the 2d density estimates
+diffDensity = dWT #Get x and y coords 
+diffDensity$z = dMUT$z - dWT$z
+
+## Melt data into long format
+# First, add row and column names (x and y grid values) to the z-value matrix
+
+rownames(diffDensity$z) = diffDensity$x
+colnames(diffDensity$z) = diffDensity$y
+diffDensity <- diffDensity$z %>% as.data.frame()
+diffDensity$xcoord <- rownames(diffDensity)
+
+# Now melt it to long format
+diffLong <- diffDensity %>%
+  pivot_longer(cols = setdiff(colnames(diffDensity), "xcoord"),
+               names_to = "ycoord",
+               values_to = "zcoord") %>%
+  dplyr::mutate(xcoord = as.numeric(xcoord),
+                ycoord = as.numeric(ycoord))
+
+names(diffLong) = c("UMAP_1","UMAP_2","z")
+```
+
+```{r plot_density_diff}
+
+# Plot difference between densities
+gDiffDensity <- ggplot() +
+  geom_tile(data = diffLong,
+            aes(x = UMAP_1, 
+             y = UMAP_2, 
+             z=z, 
+             fill=z)) +
+  geom_density2d(data = umapCoords,
+             aes(x = UMAP_1,
+             y = UMAP_2),
+             color = "black",
+             bins = 10) +
+    # geom_point(data = umapCoords,
+    #          aes(x = UMAP_1,
+    #          y = UMAP_2),
+    #          color = "black",
+    #          alpha = 0.03) +
+  # stat_contour(aes(x = UMAP_1, 
+  #            y = UMAP_2, 
+  #            z=z, 
+  #            fill=z,
+  #            colour=..level..), binwidth=0.005) +
+  scale_fill_gradient2(low="orange",mid="white", high="darkcyan", midpoint=0) +
+  labs(x = "UMAP 1", 
+       y = "UMAP 2",
+       fill = "Bach218del vs WT\ndensity") +
+  theme(aspect.ratio = 1)
+
+print(gDiffDensity)
+
+png(file.path(plotDir, "UMAP_GenotypeDifferentialDensityWithContours.png"),
+    height = 500, 
+    width = 700)
+
+print(gDiffDensity)
+
+invisible(dev.off())
+
+pdf(file.path(plotDir, "UMAP_GenotypeDifferentialDensityWithContours.pdf"),
+    height = 6, 
+    width = 8)
+
+ggplot() +
+  geom_tile(data = diffLong,
+            aes(x = UMAP_1, 
+             y = UMAP_2, 
+             z=z, 
+             fill=z)) +
+  # geom_density2d(data = umapCoords, 
+  #            aes(x = UMAP_1, 
+  #            y = UMAP_2),
+  #            color = "black",
+  #            bins = 10) +
+    geom_point(data = umapCoords,
+             aes(x = UMAP_1,
+             y = UMAP_2),
+             color = "black",
+             alpha = 0.02) +
+  # stat_contour(aes(x = UMAP_1, 
+  #            y = UMAP_2, 
+  #            z=z, 
+  #            fill=z,
+  #            colour=..level..), binwidth=0.005) +
+  scale_fill_gradient2(low="orange",mid="white", high="darkcyan", midpoint=0) +
+  labs(x = "UMAP 1", 
+       y = "UMAP 2",
+       fill = "Bach218del vs WT\ndensity") +
+  theme(aspect.ratio = 1)
+
+invisible(dev.off())
+
+```
+
+```{r test_density_similarity}
+
+#Extract UMAP to make dim red plots
+
+umapCoords <- Embeddings(object = seuratMerged[["umap"]]) 
+umapCoords <- as.data.frame(umapCoords)
+
+umapCoords <- cbind(umapCoords, seuratMerged@meta.data)
+
+#Scramble genotype labels between cells
+
+nPerm <- 1000
+permDensityResults <- diffLong
+
+for(i in 1:nPerm){
+  
+  if(i %% 10 == 0){
+    print(i)
+  }
+  
+  umapCoordsPerm <- umapCoords %>%
+    dplyr::mutate(genotype = sample(genotype))
+  
+  #Calculate difference between 2D densities
+  #Based on https://stackoverflow.com/questions/28521145/r-calculate-and-plot-difference-between-two-density-countours
+  
+  # Calculate the common x and y range
+  umapWTPerm <- umapCoordsPerm %>%
+    dplyr::filter(genotype == "WT")
+  umapMUTPerm <- umapCoordsPerm %>%
+    dplyr::filter(genotype == "Bach2del")
+  
+  #Use xrng and yrng from previous code chunks
+  # xrng = range(c(umapWT$UMAP_1-0.2, umapMUT$UMAP_1+0.2))
+  # yrng = range(c(umapWT$UMAP_2-0.2, umapMUT$UMAP_2+0.2))
+  
+  # Calculate the 2d density estimate over the common range
+  dWTPerm = kde2d(umapWTPerm$UMAP_1, umapWTPerm$UMAP_2, lims=c(xrng, yrng), n=200)
+  dMUTPerm = kde2d(umapMUTPerm$UMAP_1, umapMUTPerm$UMAP_2, lims=c(xrng, yrng), n=200)
+  
+  # # Confirm that the grid points for each density estimate are identical
+  # identical(dWT$x, dMUT$x) # TRUE
+  # identical(dWT$y, dMUT$y) # TRUE
+  
+  # Calculate the difference between the 2d density estimates
+  diffDensityPerm = dWTPerm #Get x and y coords 
+  diffDensityPerm$z = dMUTPerm$z - dWTPerm$z
+  
+  ## Melt data into long format
+  # First, add row and column names (x and y grid values) to the z-value matrix
+  
+  rownames(diffDensityPerm$z) = diffDensityPerm$x
+  colnames(diffDensityPerm$z) = diffDensityPerm$y
+  diffDensityPerm <- diffDensityPerm$z %>% as.data.frame()
+  diffDensityPerm$xcoord <- rownames(diffDensityPerm)
+  
+  # Now melt it to long format
+  diffLongPerm <- diffDensityPerm %>%
+    pivot_longer(cols = setdiff(colnames(diffDensityPerm), "xcoord"),
+                 names_to = "ycoord",
+                 values_to = "zcoord") %>%
+    dplyr::mutate(xcoord = as.numeric(xcoord),
+                  ycoord = as.numeric(ycoord))
+  
+  names(diffLongPerm) = c("UMAP_1","UMAP_2",paste0("z_perm", i))
+
+  permDensityResults <- left_join(permDensityResults, 
+                                  diffLongPerm,
+                                  by = c("UMAP_1", "UMAP_2"))
+  
+}
+
+write.csv(permDensityResults, 
+          file.path(tableDir, "GenotypeLabelPermutationResults.csv"),
+          row.names = F,
+          quote = F)
+
+#Take abs values of diff
+permDensityAbs <- cbind(permDensityResults[, 1:2], abs(permDensityResults[, 3:ncol(permDensityResults)]))
+
+permDensityAbs$quantile <- rowSums(permDensityAbs[,4:ncol(permDensityAbs)] < permDensityAbs$z)/(nPerm)
+
+permDensityAbs$pval <- 1-permDensityAbs$quantile
+permDensityAbs$pval_signed <- permDensityAbs$pval*sign(permDensityAbs$z)
+
+```
+
+```{r plot}
+
+# sig_cutoff <- 0.01
+# permDensityAbs$signed_sig <- case_when(permDensityAbs$pval < -1*sig_cutoff
+
+png(file.path(plotDir, "UMAP_DifferentialDensityP_0_01.png"),
+    height = 500, 
+    width = 700)
+
+ ggplot() +
+  geom_tile(data = permDensityAbs, 
+            aes(x = UMAP_1, 
+             y = UMAP_2, 
+             fill= pval< 0.01)) + 
+  geom_density2d(data = umapCoords,
+             aes(x = UMAP_1,
+             y = UMAP_2),
+             color = "black",
+             bins = 10) +
+    # geom_point(data = umapCoords,
+    #          aes(x = UMAP_1,
+    #          y = UMAP_2),
+    #          color = "black",
+    #          alpha = 0.03) +
+  # stat_contour(aes(x = UMAP_1, 
+  #            y = UMAP_2, 
+  #            z=z, 
+  #            fill=z,
+  #            colour=..level..), binwidth=0.005) +
+  scale_fill_manual(values = c("white",
+                               "red"),
+                    labels = c("", "p < 0.01")) +
+  labs(x = "UMAP 1", 
+       y = "UMAP 2",
+       fill = "") +
+  theme(aspect.ratio = 1) 
+ 
+ invisible(dev.off())
+ 
+ pdf(file.path(plotDir, "UMAP_DifferentialDensityP_0_001.pdf"),
+    height = 6, 
+    width = 8)
+
+ggplot() +
+   geom_tile(data = permDensityAbs, 
+            aes(x = UMAP_1, 
+             y = UMAP_2, 
+             fill= pval< 0.001)) + 
+  # geom_density2d(data = umapCoords, 
+  #            aes(x = UMAP_1, 
+  #            y = UMAP_2),
+  #            color = "black",
+  #            bins = 10) +
+    geom_point(data = umapCoords,
+             aes(x = UMAP_1,
+             y = UMAP_2),
+             color = "black",
+             alpha = 0.02) +
+  # stat_contour(aes(x = UMAP_1, 
+  #            y = UMAP_2, 
+  #            z=z, 
+  #            fill=z,
+  #            colour=..level..), binwidth=0.005) +
+    scale_fill_manual(values = c("white",
+                               "red"),
+                    labels = c("", "p < 0.001")) +
+  labs(x = "UMAP 1", 
+       y = "UMAP 2",
+       fill = "") +
+  theme(aspect.ratio = 1)
+
+invisible(dev.off())
+
+
+```
+
+
+##Surface marker expression groups
+
+```{r freq_within_surface_marker_groups}
+
+seuratMerged$KLRG1Exp <- ifelse(FetchData(seuratMerged,vars = "fb_KLRG1") > 1, "high", "low")
+
+seuratMerged$CD127Exp <- ifelse(FetchData(seuratMerged,vars = "fb_CD127") > 1, "high", "low")
+
+seuratMerged$CD62LExp <- ifelse(FetchData(seuratMerged,vars = "fb_CD62L") > 1, "high", "low")
+
+markerCounts <- seuratMerged@meta.data %>%
+  dplyr::group_by(genotype, mouseID) %>%
+  dplyr::summarise(nKLRG1Hi = sum(KLRG1Exp == "high"),
+                   nCD127Hi = sum(CD127Exp == "high"),
+                   nCD62LHi = sum(CD62LExp == "high"),
+                   pctKLRG1Hi = nKLRG1Hi/n()*100,
+                   pctCD127Hi = nCD127Hi/n()*100,
+                   pctCD62LHi = nCD62LHi/n()*100) 
+
+gMarkers <- markerCounts %>%
+  pivot_longer(cols = c("pctKLRG1Hi",
+                        "pctCD127Hi",
+                        "pctCD62LHi"),
+               names_to = "marker",
+               values_to = "pct") %>%
+  ggplot(aes(x = genotype,
+             y = pct,
+             group = mouseID,
+             color = mouseID)) +
+  geom_line() +
+  geom_point() +
+  scale_color_manual(values = mouseColors) +
+  labs(x = "",
+       y = "% cells from mouse and\ngenotype high for marker",
+       color = "") +
+  facet_wrap(~marker,
+             scales = "free_y") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+pdf(file.path(plotDir, "LinePlot_PctCellsFromMouseGenotypeHighForMarker.pdf"),
+    height = 5, 
+    width = 10)
+
+print(gMarkers)
+
+invisible(dev.off())
+
+write.csv(markerCounts,
+          file.path(tableDir, "PctCellsFromMouseGenotypeHighForMarkers.csv"),
+          row.names = F,
+          quote = F)
+
+```
+
+#Differential expression 
+
+##Across all cells
+
+```{r differential_expression_across_all}
+
+Idents(seuratMerged) <- "genotype"
+
+topMarkersMutVsWT <- FindMarkers(seuratMerged,
+                                 ident.1 = "Bach2del", 
+                                 ident.2 = "WT")
+
+write.csv(topMarkersMutVsWT, 
+          file.path(tableDir, "SeuratDEAcrossAll_MutVsWT.csv"),
+          row.names = F,
+          quote = F)
+
+```
+
+##Within clusters
+
+```{r differential_expression_within_clusters}
+
+Idents(seuratMerged) <- "seurat_clusters"
+
+MutVsWTByCluster <- NULL
+
+clusters <- unique(seuratMerged$seurat_clusters)
+for(clust in clusters){
+  markersByClust <- FindMarkers(seuratMerged, 
+                         ident.1 = "Bach2del", 
+                         ident.2 = "WT", 
+                         group.by = "genotype", 
+                         subset.ident = clust)
+  markersByClust$gene <- rownames(markersByClust)
+  markersByClust$cluster <- clust
+  
+  MutVsWTByCluster[[clust]] <- markersByClust
+}
+
+MutVsWTByCluster <- bind_rows(MutVsWTByCluster)
+
+```
+
+```{r make_wider}
+
+make_de_list_wider <- function(de_list){
+
+#Make in a wide format
+wide_list <- de_list %>%
+  dplyr::mutate(cluster_id = paste0("Cluster ",cluster),
+                cluster_id = factor(cluster_id, levels = mixedsort(unique(cluster_id)))) %>%
+  dplyr::group_by(cluster_id) %>%
+ dplyr::mutate(row_order = order(p_val_adj)) %>%
+  pivot_wider(id_cols = row_order,
+              names_from = "cluster_id",
+              names_glue = "{cluster_id}_{.value}",
+              values_from = c( "cluster_id",
+                               "gene",
+                               "avg_log2FC",
+                               "pct.1" ,
+                               "pct.2",
+                               "p_val_adj"))
+
+clusters <- unique(de_list$cluster) %>% mixedsort()
+cluster_labs <- paste0("Cluster ",rep(clusters, each = 6))
+
+column_labs <- c("cluster_id",
+                 "gene",
+                 "avg_log2FC",
+                 "pct.1" ,
+                 "pct.2",
+                 "p_val_adj")
+
+column_labs <- rep(column_labs, 5)
+
+column_labs <- paste0(cluster_labs, "_", column_labs)
+
+wide_list <- wide_list %>%
+  dplyr::select(column_labs)
+
+return(wide_list)
+
+}
+
+topMutVsWT <- make_de_list_wider(MutVsWTByCluster)
+
+write.csv(topMutVsWT, 
+          file.path(tableDir, "SeuratDEByCluster_MutVsWT.csv"),
+          row.names = F,
+          quote = F)
+
+
+```
+
+```{r write_for_monocle}
+
+save(seuratMerged,
+     file = file.path(dataDir, "SeuratMerged.RData"))
+
+```
+
